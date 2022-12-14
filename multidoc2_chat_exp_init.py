@@ -1,3 +1,5 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 import json
 from transformers import RobertaTokenizerFast
@@ -55,8 +57,12 @@ class MultiDoc2ChatDataset(Dataset):
         question = data["current_question"]
         conv_history = data["conv_history"].replace("||", " [SEP] ")
 
-        fact_question_passage = question + " [FACTS] " + facts
-        response_passage = "[CONV_HISTORY] " + conv_history + " [RESPONSE] " + utterance
+        if len(conv_history) == 0:
+            conv_history = "not available"
+
+        fact_question_passage = "[CONV_HISTORY] " + conv_history + \
+            " [CURRENT_QUESTION] "+question + " [FACTS] " + facts
+        response_passage = "[RESPONSE] " + utterance
 
         # apply the tokenizer to convert the texts to the appropriate input
         if not self.mode:
@@ -64,7 +70,8 @@ class MultiDoc2ChatDataset(Dataset):
             label_seq = label_pack["input_ids"].flatten()
             label_attention = label_pack["attention_mask"].flatten()
 
-        passage_pack = self.tokenizer(fact_question_passage, return_tensors="pt")
+        passage_pack = self.tokenizer(
+            fact_question_passage, return_tensors="pt")
 
         passage_seq = passage_pack["input_ids"].flatten()
         passage_attention = passage_pack["attention_mask"].flatten()
@@ -104,7 +111,8 @@ class SmartCollator:
     pad_token_id: int
     label_pad_token_id: int = -100
     is_gpt: boolean = False
-    max_len: int = 300
+    max_input_len: int = 400
+    max_output_len: int = 250
     is_inference: boolean = False
 
     def __call__(self, batch: List[Features]) -> Dict[str, torch.Tensor]:
@@ -112,15 +120,18 @@ class SmartCollator:
         batch_attention_masks: List = list()
         decoder_attention_mask: List = list()
         labels: List = list()
-        max_size = min([max([len(ex.input_ids) for ex in batch]), self.max_len])
+        max_size = min([max([len(ex.input_ids)
+                       for ex in batch]), self.max_input_len])
 
         max_size_output = min(
-            [max([len(ex.labels) for ex in batch]), self.max_len]
+            [max([len(ex.labels) for ex in batch]), self.max_output_len]
         )  # type: ignore
 
         for item in batch:
-            batch_inputs += [pad_seq(item.input_ids, max_size, self.pad_token_id)]
-            batch_attention_masks += [pad_seq(item.attention_mask, max_size, 0)]
+            batch_inputs += [pad_seq(item.input_ids,
+                                     max_size, self.pad_token_id)]
+            batch_attention_masks += [
+                pad_seq(item.attention_mask, max_size, 0)]
 
             if not self.is_gpt and not self.is_inference:
                 decoder_attention_mask += [
@@ -128,7 +139,8 @@ class SmartCollator:
                 ]
             if not self.is_inference:
                 labels += [
-                    pad_seq(item.labels, max_size_output, self.label_pad_token_id)
+                    pad_seq(item.labels, max_size_output,
+                            self.label_pad_token_id)
                 ]
         if not self.is_gpt:
             if not self.is_inference:
@@ -136,7 +148,8 @@ class SmartCollator:
                     input_ids=torch.concat(batch_inputs, 0),
                     attention_mask=torch.concat(batch_attention_masks, 0),
                     labels=torch.concat(labels, 0),
-                    decoder_attention_mask=torch.concat(decoder_attention_mask, 0),
+                    decoder_attention_mask=torch.concat(
+                        decoder_attention_mask, 0),
                 )
             else:
                 return dict(
@@ -173,7 +186,8 @@ class RunArguments:
 
 
 def model_init(
-    device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+    device=torch.device(
+        "cuda") if torch.cuda.is_available() else torch.device("cpu"),
 ):
     generator = EncoderDecoderModel.from_encoder_decoder_pretrained(
         encoder_model_base,
@@ -259,7 +273,8 @@ class CustomTrainer(Trainer):
         b_input_ids = batch["input_ids"].to(self.device)
         b_input_mask = batch["attention_mask"].to(self.device)
         b_labels = batch["labels"].to(self.device)
-        decoder_attention_mask = batch["decoder_attention_mask"].to(self.device)
+        decoder_attention_mask = batch["decoder_attention_mask"].to(
+            self.device)
 
         outputs = model(
             b_input_ids,
@@ -273,7 +288,7 @@ class CustomTrainer(Trainer):
 
 
 tokenizer = RobertaTokenizerFast.from_pretrained(encoder_model_base)
-special_tokens = ["[FACTS]", "[RESPONSE]", "[CONV_HISTORY]"]
+special_tokens = ["[FACTS]", "[RESPONSE]", "[CONV_HISTORY]","[CURRENT_QUESTION]"]
 tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
 
 
